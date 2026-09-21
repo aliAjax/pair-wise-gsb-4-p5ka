@@ -1,42 +1,291 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronRight, Clock3, Mic, Pause, Play, Plus, RotateCcw, Search, Trash2, Volume2 } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, FileDown, PackageOpen, Scale, Search } from 'lucide-react';
+import type { Distribution } from './lib/policy';
+import {
+  STATUS_LABEL,
+  adjudicateDependency,
+  buildMarkdownReport,
+  importEntries,
+  loadWorkspace,
+  parseManifest,
+  removeDependency,
+  saveWorkspace,
+  seedWorkspace,
+  setDistribution,
+  setEvidence,
+  setOverride,
+  summarizeBatch,
+  type Adjudication,
+  type Dependency,
+  type DepStatus,
+  type Workspace,
+} from './lib/store';
+import ImportPanel from './components/ImportPanel';
+import DependencyCard from './components/DependencyCard';
 
-type Phrase = { id: number; text: string; translation: string; tag: string; level: '入门'|'进阶'|'挑战'; status: 'new'|'practice'|'mastered'; attempts: number; last?: string };
-const seed: Phrase[] = [
-  { id: 1, text: 'The morning light feels different today.', translation: '今天的晨光感觉不一样。', tag: '日常', level: '入门', status: 'practice', attempts: 3, last: '今天 09:24' },
-  { id: 2, text: 'Could you walk me through the next step?', translation: '你能带我了解下一步吗？', tag: '工作', level: '进阶', status: 'new', attempts: 0 },
-  { id: 3, text: 'I appreciate your patience and thoughtful feedback.', translation: '感谢你的耐心和细致反馈。', tag: '表达', level: '挑战', status: 'mastered', attempts: 8, last: '昨天 18:10' },
-  { id: 4, text: 'Let’s make room for a little curiosity.', translation: '给好奇心留一点空间。', tag: '灵感', level: '入门', status: 'new', attempts: 0 },
+type Filter = 'all' | DepStatus;
+const FILTERS: { id: Filter; label: string }[] = [
+  { id: 'all', label: '全部' },
+  { id: 'allow', label: '允许' },
+  { id: 'conditional', label: '附条件' },
+  { id: 'forbidden', label: '禁止' },
+  { id: 'review', label: '待复核' },
 ];
-const bars = Array.from({ length: 68 }, (_, i) => 18 + ((i * 29) % 44));
+
+interface Row {
+  dep: Dependency;
+  adj: Adjudication;
+}
 
 export default function App() {
-  const [phrases, setPhrases] = useState<Phrase[]>(() => { try { return JSON.parse(localStorage.getItem('sound-lab-phrases') || '') || seed; } catch { return seed; } });
-  const [selected, setSelected] = useState(phrases[0]?.id ?? 1);
-  const [filter, setFilter] = useState('全部');
+  const [ws, setWs] = useState<Workspace>(loadWorkspace);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
-  const [recording, setRecording] = useState(false);
-  const [playing, setPlaying] = useState(false);
-  const [recorded, setRecorded] = useState(false);
-  const [seconds, setSeconds] = useState(0);
-  const [showAdd, setShowAdd] = useState(false);
-  const [newText, setNewText] = useState('');
-  const timer = useRef<number | undefined>(undefined);
-  const current = phrases.find(p => p.id === selected) ?? phrases[0];
-  const filtered = useMemo(() => phrases.filter(p => (filter === '全部' || p.tag === filter || p.level === filter || (filter === '待练' && p.status !== 'mastered')) && p.text.toLowerCase().includes(query.toLowerCase())), [phrases, filter, query]);
-  const tags = ['全部', ...Array.from(new Set(phrases.map(p => p.tag)))];
-  useEffect(() => { localStorage.setItem('sound-lab-phrases', JSON.stringify(phrases)); }, [phrases]);
-  useEffect(() => () => window.clearInterval(timer.current), []);
-  const startRecord = () => { if (recording) { setRecording(false); window.clearInterval(timer.current); setRecorded(true); setPhrases(ps => ps.map(p => p.id === selected ? {...p, attempts: p.attempts + 1, status: 'practice', last: '刚刚'} : p)); return; } setSeconds(0); setRecording(true); timer.current = window.setInterval(() => setSeconds(s => s + 1), 1000); };
-  const addPhrase = () => { if (!newText.trim()) return; const id = Date.now(); setPhrases(ps => [...ps, { id, text: newText.trim(), translation: '待补充译文', tag: '自定义', level: '入门', status: 'new', attempts: 0 }]); setSelected(id); setNewText(''); setShowAdd(false); };
-  const removePhrase = () => { if (!current) return; setPhrases(ps => ps.filter(p => p.id !== current.id)); setSelected(filtered.find(p => p.id !== current.id)?.id ?? phrases.find(p => p.id !== current.id)?.id ?? 0); };
-  return <div className="app-shell">
-    <aside className="sidebar"><div className="brand"><div className="brand-mark"><Volume2 size={19}/></div><div><strong>声线练习室</strong><span>Pronounce / practice</span></div></div><div className="side-label">我的练习</div><nav><button className="side-link active"><Mic size={17}/>练习库 <b>{phrases.length}</b></button><button className="side-link"><Clock3 size={17}/>练习记录</button><button className="side-link"><Check size={17}/>已掌握 <b>{phrases.filter(p => p.status === 'mastered').length}</b></button></nav><div className="sidebar-foot"><div className="streak"><span>连续练习</span><strong>5 <small>天</small></strong><i>↗ +2</i></div><div className="profile"><div className="avatar">YL</div><div><strong>Yuki Lin</strong><span>普通计划</span></div><ChevronRight size={16}/></div></div></aside>
-    <main className="main"><header className="topbar"><div><p className="eyebrow">WEDNESDAY, SEP 12</p><h1>今天练什么？</h1></div><div className="top-actions"><div className="search"><Search size={16}/><input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索句子"/></div><button className="primary" onClick={() => setShowAdd(true)}><Plus size={17}/>添加句子</button></div></header>
-      <section className="stats"><div><span>本周完成</span><strong>12 <em>/ 20</em></strong><div className="progress"><i style={{width:'60%'}}/></div></div><div><span>练习时长</span><strong>38 <em>分钟</em></strong><small>比上周多 8 分钟</small></div><div><span>最佳发音</span><strong>92 <em>分</em></strong><small className="green">↑ 6 分</small></div></section>
-      <div className="content-grid"><section className="library"><div className="section-head"><div><h2>句子库</h2><p>选择一句开始你的声音训练</p></div><button className="ghost" onClick={() => setFilter('待练')}>只看待练</button></div><div className="filters">{tags.map(t => <button key={t} className={filter === t ? 'chip active' : 'chip'} onClick={() => setFilter(t)}>{t}</button>)}</div><div className="phrase-list">{filtered.map(p => <button key={p.id} onClick={() => {setSelected(p.id); setRecorded(false)}} className={p.id === selected ? 'phrase selected' : 'phrase'}><div className="phrase-icon">{p.status === 'mastered' ? <Check size={15}/> : <Mic size={15}/>}</div><div className="phrase-copy"><strong>{p.text}</strong><span>{p.translation}</span><div className="phrase-meta"><i>{p.tag}</i><i>{p.level}</i>{p.attempts > 0 && <small>{p.attempts} 次练习</small>}</div></div><ChevronRight size={17}/></button>)}{filtered.length === 0 && <div className="empty">没有找到匹配句子</div>}</div></section>
-        {current && <section className="practice"><div className="practice-head"><div><span className="label">CURRENT PHRASE</span><h2>跟着感觉读</h2></div><button className="icon-btn" onClick={removePhrase} title="删除句子"><Trash2 size={17}/></button></div><div className="focus-card"><div className="focus-tag">{current.tag} · {current.level}</div><p className="focus-text">{current.text}</p><p className="focus-translation">{current.translation}</p><div className="audio-sample"><button className="round-btn" onClick={() => setPlaying(!playing)}>{playing ? <Pause size={18}/> : <Play size={18}/>}</button><div className="sample-wave">{bars.map((h,i) => <i key={i} style={{height: `${h * (playing ? 1.15 : 0.72)}%`}}/> )}</div><span>0:08</span></div></div><div className="record-card"><div className="record-top"><div><span className="label">YOUR RECORDING</span><h3>{recorded ? '录音已保存，听听自己的声音' : '准备好后开始录音'}</h3></div><span className="record-time">{String(Math.floor(seconds / 60)).padStart(2,'0')}:{String(seconds % 60).padStart(2,'0')}</span></div><div className="record-wave">{bars.slice(5,58).map((h,i) => <i key={i} className={recording ? 'live' : ''} style={{height: `${h * (recording ? (0.4 + ((i%5)/7)) : 0.4)}%`}}/> )}</div><div className="record-actions"><button className={recording ? 'record-button recording' : 'record-button'} onClick={startRecord}><span>{recording ? <Pause size={16}/> : <Mic size={16}/>}</span>{recording ? '结束录音' : recorded ? '重新录音' : '开始录音'}</button>{recorded && <button className="secondary" onClick={() => setPlaying(!playing)}>{playing ? <Pause size={15}/> : <Play size={15}/>} 回放</button>}</div></div><div className="tip"><span>练习小贴士</span><p>放慢速度，先把每个音节读清楚，再自然地连起来。</p><RotateCcw size={15}/></div></section>}
-      </div>
-    </main>{showAdd && <div className="modal-backdrop" onClick={() => setShowAdd(false)}><div className="modal" onClick={e => e.stopPropagation()}><div className="modal-head"><h2>添加练习句子</h2><button className="icon-btn" onClick={() => setShowAdd(false)}>×</button></div><label>英文句子<textarea autoFocus value={newText} onChange={e => setNewText(e.target.value)} placeholder="例如：I can make this happen."/></label><div className="modal-actions"><button className="secondary" onClick={() => setShowAdd(false)}>取消</button><button className="primary" onClick={addPhrase}>加入句子库</button></div></div></div>}
-  </div>;
+  const [toast, setToast] = useState('');
+  const toastTimer = useRef<number | undefined>(undefined);
+
+  // 本地持久化：任何状态变化都落盘，刷新后清单、裁决与版本链一致
+  useEffect(() => {
+    saveWorkspace(ws);
+  }, [ws]);
+
+  useEffect(() => () => window.clearTimeout(toastTimer.current), []);
+
+  const rows: Row[] = useMemo(
+    () => ws.dependencies.map((dep) => ({ dep, adj: adjudicateDependency(dep, ws.distribution) })),
+    [ws],
+  );
+  const summary = useMemo(() => summarizeBatch(rows.map((r) => r.adj)), [rows]);
+  const blockers = rows.filter((r) => r.adj.status === 'forbidden' || r.adj.status === 'review');
+
+  const visible = rows.filter((r) => {
+    if (filter !== 'all' && r.adj.status !== filter) return false;
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    return r.dep.name.toLowerCase().includes(q) || r.dep.versions.some((v) => v.expression.toLowerCase().includes(q));
+  });
+
+  const notify = (msg: string) => {
+    setToast(msg);
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(''), 3600);
+  };
+
+  // ---- 工作区操作 -----------------------------------------------------------
+
+  const handleImport = (text: string, reason: string) => {
+    const entries = parseManifest(text);
+    if (!entries.length) {
+      notify('未解析到有效依赖条目');
+      return;
+    }
+    const { ws: next, outcome } = importEntries(ws, entries, reason);
+    setWs(next);
+    const first = outcome.added[0] ?? outcome.versioned[0];
+    if (first) setExpandedKey(first.toLowerCase());
+    notify(`导入完成：新增 ${outcome.added.length} · 新版本 ${outcome.versioned.length} · 未变更 ${outcome.unchanged.length}`);
+  };
+
+  const handleDistribution = (d: Distribution) => setWs((w) => setDistribution(w, d));
+
+  const handleEvidence = (key: string) => (versionN: number, obligationKey: string, value: string) =>
+    setWs((w) => setEvidence(w, key, versionN, obligationKey, value));
+
+  const handleOverride = (key: string) => (versionN: number, author: string, justification: string) => {
+    setWs((w) => setOverride(w, key, versionN, { author, justification, at: new Date().toISOString() }));
+    notify('人工授权已记录，该依赖视为放行');
+  };
+
+  const handleClearOverride = (key: string) => (versionN: number) =>
+    setWs((w) => setOverride(w, key, versionN, null));
+
+  const handleRemove = (key: string) => () => {
+    setWs((w) => removeDependency(w, key));
+    if (expandedKey === key) setExpandedKey(null);
+  };
+
+  const handleReset = () => {
+    setWs(seedWorkspace());
+    setExpandedKey(null);
+    notify('已载入示例工作区');
+  };
+
+  const handleClear = () => {
+    setWs((w) => ({ ...w, dependencies: [] }));
+    setExpandedKey(null);
+    notify('工作区已清空');
+  };
+
+  // ---- 导出：仅当整批放行 ----------------------------------------------------
+
+  const handleExport = () => {
+    if (!summary.approved) return;
+    const md = buildMarkdownReport(ws, rows);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([md], { type: 'text/markdown' }));
+    a.download = 'license-lens-report.md';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    notify('Markdown 裁决报告已导出');
+  };
+
+  const jumpTo = (key: string) => {
+    setExpandedKey(key);
+    requestAnimationFrame(() => {
+      document.getElementById(`dep-${key}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  };
+
+  // ---- 渲染 -----------------------------------------------------------------
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand">
+          <div className="brand-mark">
+            <Scale size={18} />
+          </div>
+          <div>
+            <strong>License Lens</strong>
+            <span>SPDX 策略裁决台</span>
+          </div>
+        </div>
+        <ImportPanel
+          distribution={ws.distribution}
+          onDistribution={handleDistribution}
+          onImport={handleImport}
+          onResetSample={handleReset}
+          onClearAll={handleClear}
+        />
+      </aside>
+
+      <main className="main">
+        <header className="topbar">
+          <div>
+            <p className="eyebrow">LICENSE POLICY CONSOLE</p>
+            <h1>依赖裁决台</h1>
+          </div>
+          <div className="top-actions">
+            <span className={`batch-pill ${summary.approved ? 'ok' : 'hold'}`}>
+              {summary.approved ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
+              {summary.approved ? '整批可导出' : '整批待复核'}
+            </span>
+            <button
+              type="button"
+              className="primary"
+              disabled={!summary.approved}
+              onClick={handleExport}
+              title={summary.approved ? '导出 Markdown 裁决报告' : `存在未放行依赖：${blockers.map((b) => b.dep.name).join('、') || '—'}`}
+            >
+              <FileDown size={16} /> 导出 Markdown
+            </button>
+          </div>
+        </header>
+
+        <section className="metrics">
+          <div>
+            <span>依赖总数</span>
+            <strong>{summary.total}</strong>
+          </div>
+          <div>
+            <span>允许{summary.overridden > 0 ? `（含人工 ${summary.overridden}）` : ''}</span>
+            <strong className="c-allow">{summary.allow}</strong>
+          </div>
+          <div>
+            <span>附条件</span>
+            <strong className="c-conditional">{summary.conditional}</strong>
+          </div>
+          <div>
+            <span>禁止</span>
+            <strong className="c-forbidden">{summary.forbidden}</strong>
+          </div>
+          <div>
+            <span>待复核</span>
+            <strong className="c-review">{summary.review}</strong>
+          </div>
+        </section>
+
+        {summary.total > 0 &&
+          (summary.approved ? (
+            <div className="batch-banner ok">
+              <CheckCircle2 size={18} />
+              <div>
+                <strong>整批已放行</strong>
+                <p>所有 SPDX 表达式均已通过裁决或经人工授权覆盖，可以导出报告。</p>
+              </div>
+            </div>
+          ) : (
+            <div className="batch-banner hold">
+              <AlertTriangle size={18} />
+              <div>
+                <strong>整批停在待复核：{blockers.length} 个依赖未放行</strong>
+                <p>未知标识、冲突组合、策略禁止或缺证据的附条件义务都会阻止导出。点击名称定位到依赖与子表达式。</p>
+                <div className="blocker-chips">
+                  {blockers.map((b) => (
+                    <button key={b.dep.key} type="button" onClick={() => jumpTo(b.dep.key)}>
+                      {b.dep.name}
+                      <span>{b.adj.overridden ? '人工放行' : STATUS_LABEL[b.adj.status]}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ))}
+
+        <section className="panel">
+          <div className="panel-head">
+            <div>
+              <h2>依赖清单</h2>
+              <p>共 {summary.total} 个依赖 · 点击行展开裁决详情</p>
+            </div>
+            <div className="panel-tools">
+              <div className="filters">
+                {FILTERS.map((f) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    className={filter === f.id ? 'chip active' : 'chip'}
+                    onClick={() => setFilter(f.id)}
+                  >
+                    {f.label}
+                    {f.id !== 'all' && <em>{rows.filter((r) => r.adj.status === f.id).length}</em>}
+                  </button>
+                ))}
+              </div>
+              <div className="search">
+                <Search size={14} />
+                <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索依赖或表达式" />
+              </div>
+            </div>
+          </div>
+
+          <div className="dep-list">
+            {visible.map((r) => (
+              <DependencyCard
+                key={r.dep.key}
+                dep={r.dep}
+                adj={r.adj}
+                distribution={ws.distribution}
+                expanded={expandedKey === r.dep.key}
+                onToggle={() => setExpandedKey(expandedKey === r.dep.key ? null : r.dep.key)}
+                onEvidence={handleEvidence(r.dep.key)}
+                onOverride={handleOverride(r.dep.key)}
+                onClearOverride={handleClearOverride(r.dep.key)}
+                onRemove={handleRemove(r.dep.key)}
+              />
+            ))}
+            {visible.length === 0 && (
+              <div className="empty">
+                <PackageOpen size={22} />
+                {summary.total === 0 ? '工作区为空，从左侧导入依赖清单或载入示例' : '没有匹配当前筛选的依赖'}
+              </div>
+            )}
+          </div>
+        </section>
+      </main>
+
+      {toast && <div className="toast">{toast}</div>}
+    </div>
+  );
 }
