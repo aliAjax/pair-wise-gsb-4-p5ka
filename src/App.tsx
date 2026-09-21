@@ -1,42 +1,350 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronRight, Clock3, Mic, Pause, Play, Plus, RotateCcw, Search, Trash2, Volume2 } from 'lucide-react';
+import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import {
+  AlertTriangle,
+  Ban,
+  CheckCircle2,
+  ChevronRight,
+  CircleDashed,
+  Download,
+  FileUp,
+  History,
+  Scale,
+  Search,
+  ShieldAlert,
+  Trash2,
+  Upload,
+} from 'lucide-react';
+import { store, SAMPLE_MANIFEST } from './spdx/storage';
+import { parseManifest, planImport } from './spdx/importer';
+import { adjudicateBatch, buildReport } from './spdx/adjudication';
+import { DISTRIBUTIONS, type Blocker, type Status } from './spdx/types';
+import DepDrawer from './components/DepDrawer';
+import './styles.css';
 
-type Phrase = { id: number; text: string; translation: string; tag: string; level: '入门'|'进阶'|'挑战'; status: 'new'|'practice'|'mastered'; attempts: number; last?: string };
-const seed: Phrase[] = [
-  { id: 1, text: 'The morning light feels different today.', translation: '今天的晨光感觉不一样。', tag: '日常', level: '入门', status: 'practice', attempts: 3, last: '今天 09:24' },
-  { id: 2, text: 'Could you walk me through the next step?', translation: '你能带我了解下一步吗？', tag: '工作', level: '进阶', status: 'new', attempts: 0 },
-  { id: 3, text: 'I appreciate your patience and thoughtful feedback.', translation: '感谢你的耐心和细致反馈。', tag: '表达', level: '挑战', status: 'mastered', attempts: 8, last: '昨天 18:10' },
-  { id: 4, text: 'Let’s make room for a little curiosity.', translation: '给好奇心留一点空间。', tag: '灵感', level: '入门', status: 'new', attempts: 0 },
-];
-const bars = Array.from({ length: 68 }, (_, i) => 18 + ((i * 29) % 44));
+type Filter = 'all' | Status;
+
+const BADGE: Record<Status, { cls: string; text: string }> = {
+  allow: { cls: 'b-allow', text: '允许' },
+  conditional: { cls: 'b-cond', text: '附条件' },
+  deny: { cls: 'b-deny', text: '禁止' },
+  review: { cls: 'b-review', text: '待复核' },
+};
+
+const BLOCKER_DOT_LABEL: Record<Blocker['kind'], string> = {
+  parse: '语法',
+  unknown: '未知标识',
+  conflict: '冲突',
+  deny: '禁止',
+  evidence: '缺证据',
+};
+
+function useStore() {
+  return useSyncExternalStore(store.subscribe, store.getState, store.getServerSnapshot);
+}
 
 export default function App() {
-  const [phrases, setPhrases] = useState<Phrase[]>(() => { try { return JSON.parse(localStorage.getItem('sound-lab-phrases') || '') || seed; } catch { return seed; } });
-  const [selected, setSelected] = useState(phrases[0]?.id ?? 1);
-  const [filter, setFilter] = useState('全部');
+  const persisted = useStore();
+  const [manifest, setManifest] = useState(SAMPLE_MANIFEST);
+  const [importLog, setImportLog] = useState<string[]>([]);
+  const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
-  const [recording, setRecording] = useState(false);
-  const [playing, setPlaying] = useState(false);
-  const [recorded, setRecorded] = useState(false);
-  const [seconds, setSeconds] = useState(0);
-  const [showAdd, setShowAdd] = useState(false);
-  const [newText, setNewText] = useState('');
-  const timer = useRef<number | undefined>(undefined);
-  const current = phrases.find(p => p.id === selected) ?? phrases[0];
-  const filtered = useMemo(() => phrases.filter(p => (filter === '全部' || p.tag === filter || p.level === filter || (filter === '待练' && p.status !== 'mastered')) && p.text.toLowerCase().includes(query.toLowerCase())), [phrases, filter, query]);
-  const tags = ['全部', ...Array.from(new Set(phrases.map(p => p.tag)))];
-  useEffect(() => { localStorage.setItem('sound-lab-phrases', JSON.stringify(phrases)); }, [phrases]);
-  useEffect(() => () => window.clearInterval(timer.current), []);
-  const startRecord = () => { if (recording) { setRecording(false); window.clearInterval(timer.current); setRecorded(true); setPhrases(ps => ps.map(p => p.id === selected ? {...p, attempts: p.attempts + 1, status: 'practice', last: '刚刚'} : p)); return; } setSeconds(0); setRecording(true); timer.current = window.setInterval(() => setSeconds(s => s + 1), 1000); };
-  const addPhrase = () => { if (!newText.trim()) return; const id = Date.now(); setPhrases(ps => [...ps, { id, text: newText.trim(), translation: '待补充译文', tag: '自定义', level: '入门', status: 'new', attempts: 0 }]); setSelected(id); setNewText(''); setShowAdd(false); };
-  const removePhrase = () => { if (!current) return; setPhrases(ps => ps.filter(p => p.id !== current.id)); setSelected(filtered.find(p => p.id !== current.id)?.id ?? phrases.find(p => p.id !== current.id)?.id ?? 0); };
-  return <div className="app-shell">
-    <aside className="sidebar"><div className="brand"><div className="brand-mark"><Volume2 size={19}/></div><div><strong>声线练习室</strong><span>Pronounce / practice</span></div></div><div className="side-label">我的练习</div><nav><button className="side-link active"><Mic size={17}/>练习库 <b>{phrases.length}</b></button><button className="side-link"><Clock3 size={17}/>练习记录</button><button className="side-link"><Check size={17}/>已掌握 <b>{phrases.filter(p => p.status === 'mastered').length}</b></button></nav><div className="sidebar-foot"><div className="streak"><span>连续练习</span><strong>5 <small>天</small></strong><i>↗ +2</i></div><div className="profile"><div className="avatar">YL</div><div><strong>Yuki Lin</strong><span>普通计划</span></div><ChevronRight size={16}/></div></div></aside>
-    <main className="main"><header className="topbar"><div><p className="eyebrow">WEDNESDAY, SEP 12</p><h1>今天练什么？</h1></div><div className="top-actions"><div className="search"><Search size={16}/><input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索句子"/></div><button className="primary" onClick={() => setShowAdd(true)}><Plus size={17}/>添加句子</button></div></header>
-      <section className="stats"><div><span>本周完成</span><strong>12 <em>/ 20</em></strong><div className="progress"><i style={{width:'60%'}}/></div></div><div><span>练习时长</span><strong>38 <em>分钟</em></strong><small>比上周多 8 分钟</small></div><div><span>最佳发音</span><strong>92 <em>分</em></strong><small className="green">↑ 6 分</small></div></section>
-      <div className="content-grid"><section className="library"><div className="section-head"><div><h2>句子库</h2><p>选择一句开始你的声音训练</p></div><button className="ghost" onClick={() => setFilter('待练')}>只看待练</button></div><div className="filters">{tags.map(t => <button key={t} className={filter === t ? 'chip active' : 'chip'} onClick={() => setFilter(t)}>{t}</button>)}</div><div className="phrase-list">{filtered.map(p => <button key={p.id} onClick={() => {setSelected(p.id); setRecorded(false)}} className={p.id === selected ? 'phrase selected' : 'phrase'}><div className="phrase-icon">{p.status === 'mastered' ? <Check size={15}/> : <Mic size={15}/>}</div><div className="phrase-copy"><strong>{p.text}</strong><span>{p.translation}</span><div className="phrase-meta"><i>{p.tag}</i><i>{p.level}</i>{p.attempts > 0 && <small>{p.attempts} 次练习</small>}</div></div><ChevronRight size={17}/></button>)}{filtered.length === 0 && <div className="empty">没有找到匹配句子</div>}</div></section>
-        {current && <section className="practice"><div className="practice-head"><div><span className="label">CURRENT PHRASE</span><h2>跟着感觉读</h2></div><button className="icon-btn" onClick={removePhrase} title="删除句子"><Trash2 size={17}/></button></div><div className="focus-card"><div className="focus-tag">{current.tag} · {current.level}</div><p className="focus-text">{current.text}</p><p className="focus-translation">{current.translation}</p><div className="audio-sample"><button className="round-btn" onClick={() => setPlaying(!playing)}>{playing ? <Pause size={18}/> : <Play size={18}/>}</button><div className="sample-wave">{bars.map((h,i) => <i key={i} style={{height: `${h * (playing ? 1.15 : 0.72)}%`}}/> )}</div><span>0:08</span></div></div><div className="record-card"><div className="record-top"><div><span className="label">YOUR RECORDING</span><h3>{recorded ? '录音已保存，听听自己的声音' : '准备好后开始录音'}</h3></div><span className="record-time">{String(Math.floor(seconds / 60)).padStart(2,'0')}:{String(seconds % 60).padStart(2,'0')}</span></div><div className="record-wave">{bars.slice(5,58).map((h,i) => <i key={i} className={recording ? 'live' : ''} style={{height: `${h * (recording ? (0.4 + ((i%5)/7)) : 0.4)}%`}}/> )}</div><div className="record-actions"><button className={recording ? 'record-button recording' : 'record-button'} onClick={startRecord}><span>{recording ? <Pause size={16}/> : <Mic size={16}/>}</span>{recording ? '结束录音' : recorded ? '重新录音' : '开始录音'}</button>{recorded && <button className="secondary" onClick={() => setPlaying(!playing)}>{playing ? <Pause size={15}/> : <Play size={15}/>} 回放</button>}</div></div><div className="tip"><span>练习小贴士</span><p>放慢速度，先把每个音节读清楚，再自然地连起来。</p><RotateCcw size={15}/></div></section>}
-      </div>
-    </main>{showAdd && <div className="modal-backdrop" onClick={() => setShowAdd(false)}><div className="modal" onClick={e => e.stopPropagation()}><div className="modal-head"><h2>添加练习句子</h2><button className="icon-btn" onClick={() => setShowAdd(false)}>×</button></div><label>英文句子<textarea autoFocus value={newText} onChange={e => setNewText(e.target.value)} placeholder="例如：I can make this happen."/></label><div className="modal-actions"><button className="secondary" onClick={() => setShowAdd(false)}>取消</button><button className="primary" onClick={addPhrase}>加入句子库</button></div></div></div>}
-  </div>;
+  const [openDep, setOpenDep] = useState<string | null>(null);
+  const [focusBlocker, setFocusBlocker] = useState<string | undefined>(undefined);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const batch = useMemo(
+    () => adjudicateBatch(persisted.dependencies, persisted.distribution),
+    [persisted],
+  );
+
+  const items = batch.items.filter((it) => {
+    const status = it.overridden ? 'allow' : it.effectiveStatus;
+    return (filter === 'all' || status === filter) && it.dep.name.toLowerCase().includes(query.toLowerCase());
+  });
+
+  const openItem = batch.items.find((it) => it.dep.id === openDep) ?? null;
+
+  const runImport = () => {
+    const entries = parseManifest(manifest);
+    if (entries.length === 0) {
+      setImportLog(['未解析到任何依赖条目，请检查清单格式。']);
+      return;
+    }
+    const plans = planImport(entries, persisted.dependencies, persisted.distribution, new Date().toISOString());
+    store.applyImports(plans);
+    const created = plans.filter((p) => p.outcome === 'created').length;
+    const revised = plans.filter((p) => p.outcome === 'new-revision').length;
+    const unchanged = plans.filter((p) => p.outcome === 'unchanged').length;
+    setImportLog([
+      `本次解析 ${entries.length} 条：新建 ${created}，生成新版本 ${revised}，无变化 ${unchanged}。`,
+      ...plans
+        .filter((p) => p.outcome !== 'created')
+        .map((p) => `· ${p.entry.name}：${p.reason}`),
+    ]);
+  };
+
+  const onPickFile = async (file: File) => {
+    const text = await file.text();
+    setManifest(text);
+  };
+
+  const doExport = () => {
+    if (!batch.exportable) return;
+    const md = buildReport(persisted.dependencies, persisted.distribution);
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `license-lens-report-${new Date().toISOString().slice(0, 10)}.md`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  const jumpBlocker = (b: Blocker) => {
+    setOpenDep(b.depId);
+    setFocusBlocker(`${b.kind}-${b.span ? `${b.span.start}:${b.span.end}` : ''}-${b.obligationKey ?? ''}`);
+  };
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand">
+          <div className="brand-mark">
+            <Scale size={19} />
+          </div>
+          <div>
+            <strong>License Lens</strong>
+            <span>SPDX 策略裁决台</span>
+          </div>
+        </div>
+
+        <div className="side-label">项目分发方式</div>
+        <div className="dist-list">
+          {DISTRIBUTIONS.map((d) => (
+            <button
+              key={d.id}
+              className={`dist ${persisted.distribution === d.id ? 'active' : ''}`}
+              onClick={() => store.setDistribution(d.id)}
+              title={d.hint}
+            >
+              <span>{d.label}</span>
+              {persisted.distribution === d.id && <ChevronRight size={14} />}
+            </button>
+          ))}
+        </div>
+
+        <div className="side-label">导入清单</div>
+        <div className="import-box">
+          <textarea
+            value={manifest}
+            onChange={(e) => setManifest(e.target.value)}
+            spellCheck={false}
+            placeholder={'名称@版本  SPDX 表达式\n例：react@18.3.1 (MIT OR Apache-2.0)'}
+          />
+          <button className="primary wide" onClick={runImport}>
+            <Upload size={15} /> 解析并导入
+          </button>
+          <button className="ghost wide" onClick={() => fileRef.current?.click()}>
+            <FileUp size={15} /> 选择清单文件
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".txt,.json,.csv,.lock,package.json"
+            hidden
+            onChange={(e) => e.target.files?.[0] && onPickFile(e.target.files[0])}
+          />
+          <p className="hint">每行一条：<code>名称@版本</code> 后接 SPDX 表达式，支持括号、AND/OR/WITH 与 +；也可粘贴 package.json。</p>
+          {importLog.length > 0 && (
+            <div className="import-log">
+              {importLog.map((l, i) => (
+                <p key={i}>{l}</p>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="sidebar-foot">
+          <button className="ghost wide" onClick={() => store.resetAll()}>
+            <History size={14} /> 重置为示例数据
+          </button>
+          <p className="hint">数据仅保存在浏览器本地，刷新后清单、裁决与版本链保持一致。</p>
+        </div>
+      </aside>
+
+      <main className="main">
+        <header className="topbar">
+          <div>
+            <p className="eyebrow">SPDX POLICY DECISION DESK</p>
+            <h1>
+              策略裁决 · {DISTRIBUTIONS.find((d) => d.id === persisted.distribution)?.label}
+            </h1>
+          </div>
+          <div className={`export-zone ${batch.exportable ? 'ready' : 'locked'}`}>
+            {batch.exportable ? (
+              <button className="primary" onClick={doExport}>
+                <Download size={16} /> 导出裁决报告
+              </button>
+            ) : (
+              <button className="primary locked-btn" disabled title="整批仍有待复核项">
+                <Ban size={16} /> 导出已锁定
+              </button>
+            )}
+            <span>{batch.exportable ? '整条表达式均已放行' : `${batch.blockers.length} 个阻断点未消除`}</span>
+          </div>
+        </header>
+
+        <section className="stats">
+          <Stat label="依赖总数" value={batch.counts.total} icon={<CircleDashed size={16} />} tone="ink" />
+          <Stat label="允许" value={batch.counts.allow} icon={<CheckCircle2 size={16} />} tone="good" />
+          <Stat label="附条件" value={batch.counts.conditional} icon={<ShieldAlert size={16} />} tone="warn" />
+          <Stat label="禁止" value={batch.counts.deny} icon={<Ban size={16} />} tone="bad" />
+          <Stat label="待复核" value={batch.counts.review} icon={<AlertTriangle size={16} />} tone="review" />
+        </section>
+
+        {batch.held && (
+          <div className="hold-banner">
+            <AlertTriangle size={17} />
+            <div>
+              <b>整批停在待复核：</b>
+              存在 {batch.blockers.length} 个阻断点（未知标识 / 冲突组合 / 附条件义务缺证据 / 禁止）。逐条定位处理，或对取得书面授权的依赖走人工授权路径并填写依据后，方可导出。
+            </div>
+          </div>
+        )}
+
+        {batch.blockers.length > 0 && (
+          <section className="blocker-board">
+            <h3>阻断点定位</h3>
+            <div className="blocker-grid">
+              {batch.blockers.map((b, i) => (
+                <button key={i} className="blocker-chip" onClick={() => jumpBlocker(b)}>
+                  <span className={`dot dot-${b.kind}`} />
+                  <span className="chip-name">{b.depName}</span>
+                  <span className="chip-kind">{BLOCKER_DOT_LABEL[b.kind]}</span>
+                  {b.subText && <code>{b.subText}</code>}
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+
+        <section className="panel">
+          <div className="panel-head">
+            <div className="filters">
+              {(['all', 'allow', 'conditional', 'deny', 'review'] as Filter[]).map((f) => (
+                <button key={f} className={filter === f ? 'chip active' : 'chip'} onClick={() => setFilter(f)}>
+                  {f === 'all' ? '全部' : BADGE[f].text}
+                  <b>{f === 'all' ? batch.counts.total : batch.counts[f as keyof typeof batch.counts]}</b>
+                </button>
+              ))}
+            </div>
+            <div className="search">
+              <Search size={15} />
+              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索依赖…" />
+            </div>
+          </div>
+
+          <div className="row head">
+            <div>依赖</div>
+            <div>版本</div>
+            <div>SPDX 表达式 / 子句状态</div>
+            <div>结论</div>
+            <div />
+          </div>
+
+          {items.map((it) => {
+            const st: Status = it.overridden ? 'allow' : it.effectiveStatus;
+            const badge = BADGE[st];
+            const key = (b: Blocker) => `${b.kind}-${b.span ? `${b.span.start}:${b.span.end}` : ''}-${b.obligationKey ?? ''}`;
+            return (
+              <div
+                key={it.dep.id + it.record.revision}
+                className={`row dep-row ${it.released ? 'released' : 'held'}`}
+                onClick={() => {
+                  setOpenDep(it.dep.id);
+                  setFocusBlocker(undefined);
+                }}
+              >
+                <div className="pkg">
+                  <div className="pkgicon">{it.dep.name[0]?.toUpperCase()}</div>
+                  <div>
+                    <b>{it.dep.name}</b>
+                    {it.dep.versions.length > 1 && (
+                      <span className="rev-pill">
+                        <History size={11} /> v{it.record.revision}
+                      </span>
+                    )}
+                    <span className="pkg-sub">
+                      {it.record.changeReason ?? (it.overridden ? '人工授权覆盖' : '已登记依赖')}
+                    </span>
+                  </div>
+                </div>
+                <div className="version">{it.record.version}</div>
+                <div className="expr-cell">
+                  <code className="expr">{it.record.expression || '（空表达式）'}</code>
+                  <div className="mini-blockers">
+                    {it.blockers.slice(0, 3).map((b, i) => (
+                      <span
+                        key={i}
+                        className={`mini-dot dot-${b.kind} ${focusBlocker === key(b) ? 'flash' : ''}`}
+                        title={`${BLOCKER_DOT_LABEL[b.kind]}：${b.subText ? b.subText + ' — ' : ''}${b.message}`}
+                      />
+                    ))}
+                    {it.blockers.length > 3 && <em>+{it.blockers.length - 3}</em>}
+                    {it.overridden && <span className="override-tag">已授权</span>}
+                  </div>
+                </div>
+                <div>
+                  <span className={`badge ${badge.cls}`}>{it.overridden ? '授权放行' : badge.text}</span>
+                </div>
+                <div className="row-actions">
+                  {openDep !== it.dep.id && <ChevronRight size={16} />}
+                  <Trash2
+                    size={15}
+                    className="trash"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      store.removeDependency(it.dep.id);
+                    }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+          {items.length === 0 && <div className="empty">没有匹配的依赖，换个筛选条件或导入新清单。</div>}
+        </section>
+      </main>
+
+      {openItem && (
+        <DepDrawer
+          item={openItem}
+          focusBlockerKey={focusBlocker}
+          onClose={() => {
+            setOpenDep(null);
+            setFocusBlocker(undefined);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  icon,
+  tone,
+}: {
+  label: string;
+  value: number;
+  icon: React.ReactNode;
+  tone: 'ink' | 'good' | 'warn' | 'bad' | 'review';
+}) {
+  return (
+    <div className="stat">
+      <small>
+        {icon} {label}
+      </small>
+      <b className={`tone-${tone}`}>{value}</b>
+    </div>
+  );
 }
